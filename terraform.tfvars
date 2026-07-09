@@ -1,0 +1,17 @@
+project_id       = "gke-arena"
+region           = "asia-south1"
+vpc_network_name = "platform-vpc"
+subnet_name      = "direct-vpc-egress-subnet"
+instance_name    = "platform-postgres-db"
+
+# Leave empty ("") if not using during POC
+anthropic_api_key          = ""
+openai_api_key             = ""
+gemini_api_key             = ""
+langsmith_api_key          = ""
+tavily_api_key             = ""
+slack_token                = ""
+google_service_account_key = ""
+unleash_url                = ""
+unleash_api_token_dev      = ""
+unleash_api_token_prod     = ""

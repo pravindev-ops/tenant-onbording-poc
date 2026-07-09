@@ -53,7 +53,7 @@ variable "gar_location" {
 
 variable "gar_repository" {
   type        = string
-  default     = "tenant-apps"
+  default     = "preveen-repo"
   description = "Artifact Registry Docker repository name"
 }
 
@@ -95,13 +95,13 @@ variable "deploy_cloud_run" {
 }
 
 variable "cloudrun_api_memory_limit" {
-  type        = string
-  default     = "1024Mi"
+  type    = string
+  default = "1024Mi"
 }
 
 variable "cloudrun_mcp_memory_limit" {
-  type        = string
-  default     = "1024Mi"
+  type    = string
+  default = "1024Mi"
 }
 
 # --- Deployment Stamps (Force Rollouts) ---
@@ -112,17 +112,72 @@ variable "force_redeploy_stamps" {
 }
 
 # --- Integration Secrets & Configuration Env Variables ---
-variable "anthropic_api_key" { type = string; default = "" }
-variable "openai_api_key"    { type = string; default = "" }
-variable "gemini_api_key"    { type = string; default = "" }
-variable "langsmith_api_key" { type = string; default = "" }
-variable "tavily_api_key"    { type = string; default = "" }
-variable "slack_token"       { type = string; default = "" }
-variable "google_service_account_key" { type = string; default = "" }
-variable "unleash_url"       { type = string; default = "" }
-variable "unleash_api_token_dev"  { type = string; default = "" }
-variable "unleash_api_token_prod" { type = string; default = "" }
 
-variable "langsmith_endpoint" { type = string; default = "https://api.smith.langchain.com" }
-variable "langsmith_tracing"  { type = string; default = "false" }
-variable "sharpsell_company_id" { type = string; default = "" }
+variable "anthropic_api_key" {
+  type    = string
+  default = ""
+}
+
+variable "openai_api_key" {
+  type    = string
+  default = ""
+}
+
+variable "gemini_api_key" {
+  type    = string
+  default = ""
+}
+
+variable "langsmith_api_key" {
+  type    = string
+  default = ""
+}
+
+variable "slack_token" {
+  type    = string
+  default = ""
+}
+
+variable "google_service_account_key" {
+  type    = string
+  default = ""
+}
+
+variable "unleash_url" {
+  type    = string
+  default = ""
+}
+
+variable "unleash_api_token_dev" {
+  type    = string
+  default = ""
+}
+
+variable "unleash_api_token_prod" {
+  type    = string
+  default = ""
+}
+variable "langsmith_endpoint" {
+  description = "LangSmith API endpoint URL."
+  type        = string
+  default     = "https://api.smith.langchain.com"
+}
+
+variable "langsmith_tracing" {
+  description = "LANGSMITH_TRACING (true/false)."
+  type        = string
+  default     = "true"
+}
+
+variable "tavily_api_key" {
+  description = "Tavily search API key — TF_VAR_tavily_api_key (TAVILY_API_KEY)."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "sharpsell_company_id" {
+  description = "Default SHARPSELL_COMPANY_ID for MCP marketing tools."
+  type        = string
+  default     = "1"
+}

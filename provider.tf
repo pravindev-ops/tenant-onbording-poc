@@ -3,7 +3,7 @@ terraform {
   required_providers {
     google = {
       source  = "hashicorp/google"
-      version = "~> 5.0"
+      version = ">= 5.11.0" # <--- Force the use of version 5.11.0 or newer
     }
     random = {
       source  = "hashicorp/random"
@@ -15,9 +15,4 @@ terraform {
     }
   }
   backend "gcs" {}
-}
-
-provider "google" {
-  project = var.project_id
-  region  = var.region
 }
