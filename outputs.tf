@@ -8,14 +8,14 @@ output "private_ip_address" {
   value       = google_sql_database_instance.primary.private_ip_address
 }
 
-output "secret_ids" {
-  description = "Secret Manager secret IDs created for this stack (instance admin + connection)."
-  value = {
-    admin_user      = google_secret_manager_secret.admin_user.secret_id
-    admin_password  = google_secret_manager_secret.admin_password.secret_id
-    connection_name = google_secret_manager_secret.connection_name.secret_id
-  }
-}
+# output "secret_ids" {
+#   description = "Secret Manager secret IDs created for this stack (instance admin + connection)."
+#   value = {
+#     admin_user      = google_secret_manager_secret.admin_user.secret_id
+#     admin_password  = google_secret_manager_secret.admin_password.secret_id
+#     connection_name = google_secret_manager_secret.connection_name.secret_id
+#   }
+# }
 
 output "client_secret_ids" {
   description = "Per-client Secret Manager secret IDs (map key = lower(company_code) from client.json)."

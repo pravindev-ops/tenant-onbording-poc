@@ -376,3 +376,380 @@ resource "google_secret_manager_secret_version" "client_db_name" {
   secret      = google_secret_manager_secret.client_db_name[each.key].id
   secret_data = each.value.database_name
 }
+
+# ---------------------------------------------------------------------------
+# Cloud Run Execution Layer
+# ---------------------------------------------------------------------------
+resource "google_service_account" "cloudrun_clients" {
+  count        = local.cloudrun_enabled ? 1 : 0
+  account_id   = "ss-agents-cloudrun"
+  display_name = "Sharpsell agents Cloud Run (per-client services)"
+  project      = var.project_id
+  depends_on   = [google_project_service.required]
+}
+
+resource "google_project_iam_member" "cloudrun_sql_client" {
+  count   = local.cloudrun_enabled ? 1 : 0
+  project = var.project_id
+  role    = "roles/cloudsql.client"
+  member  = "serviceAccount:${google_service_account.cloudrun_clients[0].email}"
+}
+
+resource "google_project_iam_member" "cloudrun_artifact_registry_reader" {
+  count   = local.cloudrun_enabled ? 1 : 0
+  project = var.project_id
+  role    = "roles/artifactregistry.reader"
+  member  = "serviceAccount:${google_service_account.cloudrun_clients[0].email}"
+}
+
+# --- Client Secret Access Mapping ---
+resource "google_secret_manager_secret_iam_member" "cloudrun_accessor_client_db" {
+  for_each  = local.cloudrun_enabled ? local.clients : {}
+  project   = var.project_id
+  secret_id = google_secret_manager_secret.client_db_username[each.key].secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.cloudrun_clients[0].email}"
+}
+
+resource "google_secret_manager_secret_iam_member" "cloudrun_accessor_client_pw" {
+  for_each  = local.cloudrun_enabled ? local.clients : {}
+  project   = var.project_id
+  secret_id = google_secret_manager_secret.client_db_password[each.key].secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.cloudrun_clients[0].email}"
+}
+
+resource "google_secret_manager_secret_iam_member" "cloudrun_accessor_client_dbname" {
+  for_each  = local.cloudrun_enabled ? local.clients : {}
+  project   = var.project_id
+  secret_id = google_secret_manager_secret.client_db_name[each.key].secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.cloudrun_clients[0].email}"
+}
+
+# ---------------------------------------------------------------------------
+# Cloud Run Services (Direct VPC Egress Integration)
+# ---------------------------------------------------------------------------
+
+# 1. MCP Service
+resource "google_cloud_run_v2_service" "mcp" {
+  for_each            = local.cloudrun_enabled ? local.clients : {}
+  name                = "ss-agents-mcp-${each.key}"
+  location            = var.region
+  project             = var.project_id
+  deletion_protection = false
+  ingress             = "INGRESS_TRAFFIC_ALL"
+
+  template {
+    service_account                  = google_service_account.cloudrun_clients[0].email
+    max_instance_request_concurrency = 40
+    session_affinity                 = true
+    timeout                          = "1200s"
+
+    scaling {
+      min_instance_count = 1
+      max_instance_count = 10
+    }
+
+    # Replaced Serverless VPC Access connector with Direct VPC Egress
+    vpc_access {
+      network_interfaces {
+        network    = data.google_compute_network.selected.name
+        subnetwork = data.google_compute_subnetwork.selected_subnetwork.name
+      }
+      egress = "PRIVATE_RANGES_ONLY"
+    }
+
+    containers {
+      image = "${local.mcp_image_base}:${each.value.tag}"
+      resources {
+        limits = {
+          memory = var.cloudrun_mcp_memory_limit
+        }
+      }
+      ports {
+        container_port = 80
+      }
+
+      startup_probe {
+        http_get {
+          path = "/"
+          port = 80
+        }
+        initial_delay_seconds = 5
+        period_seconds        = 5
+        timeout_seconds       = 3
+        failure_threshold     = 60
+      }
+
+      dynamic "env" {
+        for_each = local.mcp_shared_env
+        iterator = item
+        content {
+          name  = item.value.name
+          value = item.value.value
+        }
+      }
+
+      env {
+        name  = "COMPANY_CODE"
+        value = each.key
+      }
+      env {
+        name  = "LANGSMITH_PROJECT"
+        value = each.key
+      }
+      env {
+        name  = "SHARPSELL_BASE_URL"
+        value = each.value.base_url
+      }
+      env {
+        name  = "DEPLOY_STAMP"
+        value = lookup(var.force_redeploy_stamps, each.key, "stable")
+      }
+      env {
+        name  = "ANTHROPIC_API_KEY"
+        value = var.anthropic_api_key
+      }
+      env {
+        name  = "OPENAI_API_KEY"
+        value = var.openai_api_key
+      }
+      env {
+        name  = "GEMINI_API_KEY"
+        value = var.gemini_api_key
+      }
+      env {
+        name  = "LANGSMITH_API_KEY"
+        value = var.langsmith_api_key
+      }
+      env {
+        name  = "TAVILY_API_KEY"
+        value = var.tavily_api_key
+      }
+      env {
+        name  = "GOOGLE_SERVICE_ACCOUNT_KEY"
+        value = var.google_service_account_key
+      }
+      env {
+        name  = "GOOGLE_SHARED_DRIVE_ID"
+        value = "0AJhDluJYGWqEUk9PVA"
+      }
+    }
+  }
+
+  lifecycle {
+    ignore_changes = [
+      client,
+      annotations,
+      labels,
+      scaling,
+      template[0].annotations,
+      template[0].labels,
+      template[0].containers[0].resources,
+      template[0].scaling,
+    ]
+  }
+
+  depends_on = [
+    google_project_service.required,
+  ]
+}
+
+# 2. API Service
+resource "google_cloud_run_v2_service" "api" {
+  for_each            = local.cloudrun_enabled ? local.clients : {}
+  name                = "ss-agents-api-${each.key}"
+  location            = var.region
+  project             = var.project_id
+  deletion_protection = false
+  ingress             = "INGRESS_TRAFFIC_ALL"
+
+  template {
+    service_account                  = google_service_account.cloudrun_clients[0].email
+    max_instance_request_concurrency = 40
+    timeout                          = "1200s"
+
+    scaling {
+      min_instance_count = 1
+      max_instance_count = 10
+    }
+
+    # Replaced Serverless VPC Access connector with Direct VPC Egress
+    vpc_access {
+      network_interfaces {
+        network    = data.google_compute_network.selected.name
+        subnetwork = data.google_compute_subnetwork.selected_subnetwork.name
+      }
+      egress = "PRIVATE_RANGES_ONLY"
+    }
+
+    containers {
+      image = "${local.api_image_base}:${each.value.tag}"
+      resources {
+        limits = {
+          memory = var.cloudrun_api_memory_limit
+        }
+      }
+      ports {
+        container_port = 80
+      }
+
+      startup_probe {
+        http_get {
+          path = "/"
+          port = 80
+        }
+        initial_delay_seconds = 10
+        period_seconds        = 5
+        timeout_seconds       = 3
+        failure_threshold     = 60
+      }
+
+      env {
+        name  = "MCP_SERVER_URL"
+        value = "${google_cloud_run_v2_service.mcp[each.key].uri}/mcp"
+      }
+      env {
+        name  = "POSTGRES_DB_HOST"
+        value = data.google_sql_database_instance.primary.private_ip_address
+      }
+      env {
+        name  = "POSTGRES_DB_PORT" 
+        value = "5432"
+      }
+      env {
+        name = "POSTGRES_DB_USER"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.client_db_username[each.key].secret_id
+            version = "latest"
+          }
+        }
+      }
+      env {
+        name = "POSTGRES_DB_PASSWORD"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.client_db_password[each.key].secret_id
+            version = "latest"
+          }
+        }
+      }
+      env {
+        name = "POSTGRES_DB_NAME"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.client_db_name[each.key].secret_id
+            version = "latest"
+          }
+        }
+      }
+
+      env {
+        name  = "APP_ENV"
+        value = each.value.env
+      }
+      env {
+        name  = "COMPANY_CODE"
+        value = each.key
+      }
+      env {
+        name  = "SHARPSELL_BASE_URL"
+        value = each.value.base_url
+      }
+      env {
+        name  = "LANGSMITH_PROJECT"
+        value = each.key
+      }
+      env {
+        name  = "LANGSMITH_ENDPOINT"
+        value = var.langsmith_endpoint
+      }
+      env {
+        name  = "LANGSMITH_TRACING"
+        value = var.langsmith_tracing
+      }
+      env {
+        name  = "DEPLOY_STAMP"
+        value = lookup(var.force_redeploy_stamps, each.key, "stable")
+      }
+      env {
+        name  = "ANTHROPIC_API_KEY"
+        value = var.anthropic_api_key
+      }
+      env {
+        name  = "OPENAI_API_KEY"
+        value = var.openai_api_key
+      }
+      env {
+        name  = "GEMINI_API_KEY"
+        value = var.gemini_api_key
+      }
+      env {
+        name  = "LANGSMITH_API_KEY"
+        value = var.langsmith_api_key
+      }
+      env {
+        name  = "TAVILY_API_KEY"
+        value = var.tavily_api_key
+      }
+      env {
+        name  = "GOOGLE_SERVICE_ACCOUNT_KEY"
+        value = var.google_service_account_key
+      }
+      env {
+        name  = "GOOGLE_SHARED_DRIVE_ID"
+        value = "0AJhDluJYGWqEUk9PVA"
+      }
+      env {
+        name  = "UNLEASH_URL"
+        value = var.unleash_url
+      }
+      env {
+        name  = "UNLEASH_API_TOKEN"
+        value = each.value.env == "development" ? var.unleash_api_token_dev : var.unleash_api_token_prod
+      }
+    }
+  }
+
+  lifecycle {
+    ignore_changes = [
+      client,
+      annotations,
+      labels,
+      scaling,
+      template[0].annotations,
+      template[0].labels,
+      template[0].containers[0].resources,
+      template[0].scaling,
+    ]
+  }
+
+  depends_on = [
+    google_project_service.required,
+    google_cloud_run_v2_service.mcp,
+    google_secret_manager_secret_version.client_db_username,
+    google_secret_manager_secret_version.client_db_password,
+    google_secret_manager_secret_version.client_db_name,
+  ]
+}
+
+# --- Service Public Access Rules ---
+resource "google_cloud_run_v2_service_iam_member" "mcp_invoker_public" {
+  for_each = local.cloudrun_enabled ? local.clients : {}
+  project  = var.project_id
+  location = var.region
+  name     = google_cloud_run_v2_service.mcp[each.key].name
+  role     = "roles/run.invoker"
+  member   = "allUsers"
+}
+
+resource "google_cloud_run_v2_service_iam_member" "api_invoker_public" {
+  for_each = local.cloudrun_enabled ? local.clients : {}
+  project  = var.project_id
+  location = var.region
+  name     = google_cloud_run_v2_service.api[each.key].name
+  role     = "roles/run.invoker"
+  member   = "allUsers"
+}
