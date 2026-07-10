@@ -1,11 +1,11 @@
 output "instance_connection_name" {
   description = "For Cloud SQL Auth Proxy / connectors: project:region:instance."
-  value       = google_sql_database_instance.primary.connection_name
+  value       = data.google_sql_database_instance.primary.connection_name
 }
 
 output "private_ip_address" {
   description = "Private IPv4 of the instance (same VPC / peered networks)."
-  value       = google_sql_database_instance.primary.private_ip_address
+  value       = data.google_sql_database_instance.primary.private_ip_address
 }
 
 # output "secret_ids" {

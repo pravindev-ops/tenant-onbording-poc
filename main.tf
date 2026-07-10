@@ -615,7 +615,7 @@ resource "google_cloud_run_v2_service" "api" {
         value = data.google_sql_database_instance.primary.private_ip_address
       }
       env {
-        name  = "POSTGRES_DB_PORT" 
+        name  = "POSTGRES_DB_PORT"
         value = "5432"
       }
       env {
