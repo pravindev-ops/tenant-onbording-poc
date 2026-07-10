@@ -1,3 +1,109 @@
+# ---------------------------------------------------------------------------
+# Local Parsing, Normalization and Validations
+# ---------------------------------------------------------------------------
+locals {
+  clients_raw = jsondecode(file("${path.module}/client.json"))
+
+  clients = {
+    for c in local.clients_raw : lower(trimspace(c.company_code)) => {
+      database_name = "sharpsell_agents_${replace(lower(trimspace(c.company_code)), "-", "_")}"
+      username      = "${replace(lower(trimspace(c.company_code)), "-", "_")}_app"
+      base_url      = "https://${trimspace(c.base_url)}"
+      tag           = trimspace(c.tag)
+      env           = endswith(lower(trimspace(c.company_code)), "-dev") ? "development" : "production"
+    }
+  }
+
+  gar_registry_host = "${var.gar_location}-docker.pkg.dev"
+  api_image_base    = "${local.gar_registry_host}/${var.project_id}/${var.gar_repository}/${var.image_prefix}-api"
+  mcp_image_base    = "${local.gar_registry_host}/${var.project_id}/${var.gar_repository}/${var.image_prefix}-mcp"
+
+  network_id       = data.google_compute_network.selected.id
+  cloudrun_enabled = var.deploy_cloud_run && length(local.clients) > 0
+
+  mcp_shared_env = [
+    { name = "MCP_SERVER_PORT", value = "80" },
+    { name = "LANGSMITH_ENDPOINT", value = var.langsmith_endpoint },
+    { name = "LANGSMITH_TRACING", value = var.langsmith_tracing },
+    { name = "SHARPSELL_COMPANY_ID", value = var.sharpsell_company_id },
+  ]
+}
+
+# ---------------------------------------------------------------------------
+# Pre-flight Guardrails and Shape Checks
+# ---------------------------------------------------------------------------
+check "client_json_is_list" {
+  assert {
+    condition     = startswith(jsonencode(local.clients_raw), "[")
+    error_message = "client.json must be a JSON array (e.g. [{\"company_code\":\"acme\",\"base_url\":\"acme.sharpselltech.com\",\"tag\":\"v1\"}])."
+  }
+}
+
+check "client_entries_shape" {
+  assert {
+    condition = alltrue([
+      for c in local.clients_raw : try(
+        c.company_code != null && trimspace(c.company_code) != "" &&
+        c.base_url != null && trimspace(c.base_url) != "" &&
+        c.tag != null && trimspace(c.tag) != "",
+        false
+      )
+    ])
+    error_message = "Each entry must include non-empty company_code, base_url, and tag."
+  }
+}
+
+check "client_base_urls_valid" {
+  assert {
+    condition = alltrue([
+      for c in local.clients_raw : can(regex(
+        "^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?([.][A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$",
+        trimspace(c.base_url)
+      ))
+    ])
+    error_message = "base_url must be a bare host without scheme, port, or path."
+  }
+}
+
+check "client_image_tags_valid" {
+  assert {
+    condition = alltrue([
+      for c in local.clients_raw : can(regex("^[a-zA-Z0-9._-]{1,128}$", trimspace(c.tag)))
+    ])
+    error_message = "Each tag must be a valid Docker tag."
+  }
+}
+
+check "company_codes_valid" {
+  assert {
+    condition = alltrue([
+      for c in local.clients_raw : can(regex("^[a-zA-Z0-9][a-zA-Z0-9-]{0,30}$", trimspace(c.company_code)))
+    ])
+    error_message = "company_code must be 1-31 alphanumeric characters or hyphens."
+  }
+}
+
+check "client_derived_identifiers" {
+  assert {
+    condition = alltrue([
+      for c in values(local.clients) : (
+        can(regex("^[a-zA-Z_][a-zA-Z0-9_]{0,62}$", c.database_name)) &&
+        can(regex("^[a-zA-Z_][a-zA-Z0-9_]{0,62}$", c.username))
+      )
+    ])
+    error_message = "Derived database_name or username is not a valid Postgres identifier."
+  }
+}
+
+check "client_usernames_not_admin" {
+  assert {
+    condition = alltrue([
+      for c in values(local.clients) : c.username != var.admin_username
+    ])
+    error_message = "A derived client username matched the admin_username."
+  }
+}
+
 locals {
   network_id = data.google_compute_network.selected.id
 }

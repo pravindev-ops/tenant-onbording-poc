@@ -1,0 +1,260 @@
+name: Deploy Tenant Infrastructure
+
+on:
+  workflow_dispatch:
+    inputs:
+      terraform_action:
+        description: "plan = preview only; apply = create/update; destroy = tear down managed resources (requires confirmation)."
+        required: true
+        default: plan
+        type: choice
+        options:
+          - plan
+          - apply
+          - destroy
+      destroy_confirmation:
+        description: "If action is destroy, type DESTROY (all caps) exactly. Ignored for plan/apply."
+        required: false
+        type: string
+        default: ""
+      selected_clients:
+        description: "Comma-separated client names (e.g. ss-agent-test-dev,ss-agent-prod) to scope the apply to. Leave blank to apply across all clients. Only used when action is apply."
+        required: false
+        type: string
+        default: ""
+      force_redeploy_client:
+        description: "Client name to force-redeploy (e.g. ss-agent-test-dev). Rolls a new Cloud Run revision for its API + MCP services in-place (URL, IAM, and traffic preserved). Only used when action is apply."
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  GCP_PROJECT_ID: gke-arena
+  GCP_REGION: asia-south1
+  TF_VAR_spend_report_enabled: ${{ vars.TF_VAR_spend_report_enabled || 'true' }}
+  TF_VAR_spend_report_schedule: ${{ vars.TF_VAR_spend_report_schedule || '0 * * * *' }}
+  TF_VAR_spend_report_timezone: ${{ vars.TF_VAR_spend_report_timezone || 'Asia/Kolkata' }}
+  TF_VAR_spend_report_lookback_days: ${{ vars.TF_VAR_spend_report_lookback_days || '7' }}
+  TF_VAR_spend_report_top_services: ${{ vars.TF_VAR_spend_report_top_services || '50' }}
+  TF_VAR_spend_report_label: ${{ vars.TF_VAR_spend_report_label || 'Sharpsell Agents GCP' }}
+  TF_VAR_spend_report_billing_project_id: ${{ vars.TF_VAR_spend_report_billing_project_id || 'ss-agents-493409' }}
+  TF_VAR_spend_report_billing_dataset: ${{ vars.TF_VAR_spend_report_billing_dataset || 'billing_export' }}
+  TF_VAR_spend_report_billing_location: ${{ vars.TF_VAR_spend_report_billing_location || 'asia-south1' }}
+  TF_VAR_spend_report_billing_table: ${{ vars.TF_VAR_spend_report_billing_table || 'gcp_billing_export_v1_011D81_C2CD75_FF953A' }}
+  TF_VAR_spend_report_image_tag: ${{ vars.TF_VAR_spend_report_image_tag || 'latest' }}
+  TF_VAR_spend_report_deploy_stamp: ${{ vars.TF_VAR_spend_report_deploy_stamp || 'stable' }}
+  TF_VAR_eval_reports_image_tag: ${{ vars.TF_VAR_eval_reports_image_tag || 'latest' }}
+  TF_VAR_eval_reports_deploy_stamp: ${{ vars.TF_VAR_eval_reports_deploy_stamp || 'stable' }}
+  TF_VAR_eval_reports_timezone: ${{ vars.TF_VAR_eval_reports_timezone || 'Asia/Kolkata' }}
+
+jobs:
+  terraform:
+    name: "Action: ${{ inputs.terraform_action }}${{ inputs.selected_clients && format(', Selected: {0}', inputs.selected_clients) || '' }}${{ inputs.destroy_confirmation && format(', Destroy: {0}', inputs.destroy_confirmation) || '' }}"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate client inputs against client.json
+        if: inputs.terraform_action == 'apply' && (inputs.selected_clients != '' || inputs.force_redeploy_client != '')
+        env:
+          SELECTED_CLIENTS: ${{ inputs.selected_clients }}
+          FORCE_REDEPLOY_CLIENT: ${{ inputs.force_redeploy_client }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
+          from pathlib import Path
+
+          selected = [c.strip() for c in os.environ.get("SELECTED_CLIENTS", "").split(",") if c.strip()]
+          force_redeploy = os.environ.get("FORCE_REDEPLOY_CLIENT", "").strip()
+          known = {item["company_code"].strip() for item in json.loads(Path("client.json").read_text())}
+
+          errors = []
+          missing = [c for c in selected if c not in known]
+          if missing:
+              errors.append(f"selected_clients contains entries not present in client.json: {missing}")
+          if force_redeploy and force_redeploy not in known:
+              errors.append(f"force_redeploy_client is not present in client.json: {force_redeploy!r}")
+          if force_redeploy and selected and force_redeploy not in selected:
+              errors.append(
+                  f"force_redeploy_client {force_redeploy!r} is not in selected_clients — the stamp bump would be a no-op. "
+                  "Either include it in selected_clients or clear force_redeploy_client."
+              )
+
+          if errors:
+              for e in errors:
+                  sys.stderr.write(f"::error::{e}\n")
+              sys.stderr.write("Known clients in client.json:\n")
+              for k in sorted(known):
+                  sys.stderr.write(f"  - {k}\n")
+              sys.exit(1)
+          PY
+
+      - name: Authenticate to Google Cloud
+        uses: 'google-github-actions/auth@v2'
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+
+      - name: Terraform init
+        env:
+          TF_STATE_BUCKET: tenant-poc-tf-state
+        run: |
+          if [ -z "${TF_STATE_BUCKET}" ]; then
+            echo "Set repository variable TF_STATE_BUCKET to a GCS bucket name for remote state."
+            exit 1
+          fi
+          terraform init -input=false \
+            -backend-config="bucket=${TF_STATE_BUCKET}" \
+            -backend-config="prefix=cloudsql/sharpsell-agents"
+
+      - name: Terraform format (check)
+        run: terraform fmt -check -recursive
+
+      - name: Terraform validate
+        run: terraform validate
+
+      - name: Confirm destroy
+        if: inputs.terraform_action == 'destroy'
+        run: |
+          if [ "${{ inputs.destroy_confirmation }}" != "DESTROY" ]; then
+            echo "::error::When terraform_action is destroy, set destroy_confirmation to exactly: DESTROY"
+            exit 1
+          fi
+
+      - name: Enable required GCP APIs
+        if: inputs.terraform_action != 'destroy'
+        env:
+          TF_VAR_anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          TF_VAR_gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+          TF_VAR_langsmith_api_key: ${{ secrets.LANGSMITH_API_KEY }}
+          TF_VAR_tavily_api_key: ${{ secrets.TAVILY_API_KEY }}
+          TF_VAR_slack_token: ${{ secrets.slack_token }}
+          TF_VAR_google_service_account_key: ${{ secrets.GOOGLE_SERVICES_ACCOUNT }}
+          TF_VAR_unleash_url: ${{ secrets.UNLEASH_URL }}
+          TF_VAR_unleash_api_token_dev: ${{ secrets.UNLEASH_API_TOKEN_DEV }}
+          TF_VAR_unleash_api_token_prod: ${{ secrets.UNLEASH_API_TOKEN_PROD }}
+        run: |
+          terraform apply -input=false -auto-approve \
+            -target=google_project_service.required \
+            -target=time_sleep.api_propagation \
+            -var="project_id=${{ env.GCP_PROJECT_ID }}" \
+            -var="region=${{ env.GCP_REGION }}"
+
+      - name: Terraform plan
+        if: inputs.terraform_action == 'plan'
+        env:
+          TF_VAR_anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          TF_VAR_gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+          TF_VAR_langsmith_api_key: ${{ secrets.LANGSMITH_API_KEY }}
+          TF_VAR_tavily_api_key: ${{ secrets.TAVILY_API_KEY }}
+          TF_VAR_slack_token: ${{ secrets.slack_token }}
+          TF_VAR_google_service_account_key: ${{ secrets.GOOGLE_SERVICES_ACCOUNT }}
+          TF_VAR_unleash_url: ${{ secrets.UNLEASH_URL }}
+          TF_VAR_unleash_api_token_dev: ${{ secrets.UNLEASH_API_TOKEN_DEV }}
+          TF_VAR_unleash_api_token_prod: ${{ secrets.UNLEASH_API_TOKEN_PROD }}
+        run: |
+          terraform plan -input=false \
+            -var="project_id=${{ env.GCP_PROJECT_ID }}" \
+            -var="region=${{ env.GCP_REGION }}"
+
+      - name: Terraform apply
+        if: inputs.terraform_action == 'apply'
+        env:
+          TF_VAR_anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          TF_VAR_gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+          TF_VAR_langsmith_api_key: ${{ secrets.LANGSMITH_API_KEY }}
+          TF_VAR_tavily_api_key: ${{ secrets.TAVILY_API_KEY }}
+          TF_VAR_slack_token: ${{ secrets.slack_token }}
+          TF_VAR_google_service_account_key: ${{ secrets.GOOGLE_SERVICES_ACCOUNT }}
+          TF_VAR_unleash_url: ${{ secrets.UNLEASH_URL }}
+          TF_VAR_unleash_api_token_dev: ${{ secrets.UNLEASH_API_TOKEN_DEV }}
+          TF_VAR_unleash_api_token_prod: ${{ secrets.UNLEASH_API_TOKEN_PROD }}
+        run: |
+          STAMP_FLAG=()
+          if [ -n "${{ inputs.force_redeploy_client }}" ]; then
+            CLIENT="${{ inputs.force_redeploy_client }}"
+            STAMP="run-${{ github.run_id }}-${{ github.run_attempt }}"
+            STAMP_FLAG+=(-var="force_redeploy_stamps={\"${CLIENT}\":\"${STAMP}\"}")
+          fi
+
+          SELECTED="${{ inputs.selected_clients }}"
+          if [ -n "${SELECTED}" ]; then
+            TARGET_FLAGS=()
+            IFS=',' read -r -a CLIENTS <<< "${SELECTED}"
+
+            for CLIENT in "${CLIENTS[@]}"; do
+              CLIENT="$(echo -n "${CLIENT}" | xargs)"
+              [ -z "${CLIENT}" ] && continue
+              TARGET_FLAGS+=(-target="random_password.client[\"${CLIENT}\"]")
+              TARGET_FLAGS+=(-target="google_sql_database.client[\"${CLIENT}\"]")
+              TARGET_FLAGS+=(-target="google_sql_user.client[\"${CLIENT}\"]")
+              TARGET_FLAGS+=(-target="google_secret_manager_secret.client_db_username[\"${CLIENT}\"]")
+              TARGET_FLAGS+=(-target="google_secret_manager_secret_version.client_db_username[\"${CLIENT}\"]")
+              TARGET_FLAGS+=(-target="google_secret_manager_secret.client_db_password[\"${CLIENT}\"]")
+              TARGET_FLAGS+=(-target="google_secret_manager_secret_version.client_db_password[\"${CLIENT}\"]")
+              TARGET_FLAGS+=(-target="google_secret_manager_secret.client_db_name[\"${CLIENT}\"]")
+              TARGET_FLAGS+=(-target="google_secret_manager_secret_version.client_db_name[\"${CLIENT}\"]")
+              TARGET_FLAGS+=(-target="google_secret_manager_secret_iam_member.cloudrun_accessor_client_db[\"${CLIENT}\"]")
+              TARGET_FLAGS+=(-target="google_secret_manager_secret_iam_member.cloudrun_accessor_client_pw[\"${CLIENT}\"]")
+              TARGET_FLAGS+=(-target="google_secret_manager_secret_iam_member.cloudrun_accessor_client_dbname[\"${CLIENT}\"]")
+              TARGET_FLAGS+=(-target="google_cloud_run_v2_service.mcp[\"${CLIENT}\"]")
+              TARGET_FLAGS+=(-target="google_cloud_run_v2_service.api[\"${CLIENT}\"]")
+              TARGET_FLAGS+=(-target="google_cloud_run_v2_service_iam_member.mcp_invoker_public[\"${CLIENT}\"]")
+              TARGET_FLAGS+=(-target="google_cloud_run_v2_service_iam_member.api_invoker_public[\"${CLIENT}\"]")
+            done
+
+            terraform apply -input=false -auto-approve \
+              -var="project_id=${{ env.GCP_PROJECT_ID }}" \
+              -var="region=${{ env.GCP_REGION }}" \
+              "${STAMP_FLAG[@]}" \
+              "${TARGET_FLAGS[@]}"
+          else
+            terraform apply -input=false -auto-approve \
+              -var="project_id=${{ env.GCP_PROJECT_ID }}" \
+              -var="region=${{ env.GCP_REGION }}" \
+              "${STAMP_FLAG[@]}"
+          fi
+
+      - name: Terraform destroy
+        if: inputs.terraform_action == 'destroy'
+        env:
+          TF_VAR_anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          TF_VAR_gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+          TF_VAR_langsmith_api_key: ${{ secrets.LANGSMITH_API_KEY }}
+          TF_VAR_tavily_api_key: ${{ secrets.TAVILY_API_KEY }}
+          TF_VAR_slack_token: ${{ secrets.slack_token }}
+          TF_VAR_google_service_account_key: ${{ secrets.GOOGLE_SERVICES_ACCOUNT }}
+          TF_VAR_unleash_url: ${{ secrets.UNLEASH_URL }}
+          TF_VAR_unleash_api_token_dev: ${{ secrets.UNLEASH_API_TOKEN_DEV }}
+          TF_VAR_unleash_api_token_prod: ${{ secrets.UNLEASH_API_TOKEN_PROD }}
+        run: |
+          terraform destroy -input=false -auto-approve \
+            -var="project_id=${{ env.GCP_PROJECT_ID }}" \
+            -var="region=${{ env.GCP_REGION }}"
