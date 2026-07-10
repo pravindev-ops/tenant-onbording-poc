@@ -151,6 +151,13 @@ data "google_compute_network" "selected" {
   name       = var.vpc_network_name
   depends_on = [time_sleep.api_propagation]
 }
+
+data "google_compute_subnetwork" "selected_subnetwork" {
+  name       = var.subnet_name
+  region     = var.region
+  depends_on = [time_sleep.api_propagation]
+}
+
 /*
 resource "google_compute_global_address" "private_sql_peering" {
   name          = var.private_service_range_name
