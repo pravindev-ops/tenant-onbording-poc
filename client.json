@@ -1,7 +1,12 @@
 [
   {
-    "company_code": "praveenpolll",
+    "company_code": "praveen",
     "base_url": "praveenpoc.com",
     "tag": "v1.3.6"
-  }
+  },
+   {
+    "company_code": "asif",
+    "base_url": "asifpoc.com",
+    "tag": "v1.3.6"
+  }  
 ]

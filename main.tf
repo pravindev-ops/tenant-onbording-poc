@@ -104,10 +104,6 @@ check "client_usernames_not_admin" {
   }
 }
 
-locals {
-  network_id = data.google_compute_network.selected.id
-}
-
 # ---------------------------------------------------------------------------
 # Enable all required GCP APIs
 # ---------------------------------------------------------------------------
@@ -155,7 +151,7 @@ data "google_compute_network" "selected" {
   name       = var.vpc_network_name
   depends_on = [time_sleep.api_propagation]
 }
-
+/*
 resource "google_compute_global_address" "private_sql_peering" {
   name          = var.private_service_range_name
   purpose       = "VPC_PEERING"
@@ -272,6 +268,13 @@ resource "google_secret_manager_secret_version" "admin_password" {
   secret      = google_secret_manager_secret.admin_password.id
   secret_data = random_password.admin.result
 }
+*/
+
+
+# --- Fetch Existing Shared Cloud SQL Instance (Created by Script 1) ---
+data "google_sql_database_instance" "primary" {
+  name = var.instance_name
+}
 
 resource "google_secret_manager_secret" "connection_name" {
   secret_id = "${var.secret_name_prefix}-cloudsql-connection-name"
@@ -285,8 +288,10 @@ resource "google_secret_manager_secret" "connection_name" {
 
 resource "google_secret_manager_secret_version" "connection_name" {
   secret      = google_secret_manager_secret.connection_name.id
-  secret_data = google_sql_database_instance.primary.connection_name
+  secret_data = data.google_sql_database_instance.primary.connection_name
 }
+
+
 
 # --- Per-client databases, users, and Secret Manager credentials ---
 
@@ -302,14 +307,14 @@ resource "google_sql_database" "client" {
   for_each = local.clients
 
   name     = each.value.database_name
-  instance = google_sql_database_instance.primary.name
+  instance = data.google_sql_database_instance.primary.name # <--- Reference the data source
 }
 
 resource "google_sql_user" "client" {
   for_each = local.clients
 
   name     = each.value.username
-  instance = google_sql_database_instance.primary.name
+  instance = data.google_sql_database_instance.primary.name # <--- Reference the data source
   password = random_password.client[each.key].result
 
   depends_on = [google_sql_database.client]

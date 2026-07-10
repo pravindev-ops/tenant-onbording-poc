@@ -40,11 +40,6 @@ env:
   TF_VAR_spend_report_timezone: ${{ vars.TF_VAR_spend_report_timezone || 'Asia/Kolkata' }}
   TF_VAR_spend_report_lookback_days: ${{ vars.TF_VAR_spend_report_lookback_days || '7' }}
   TF_VAR_spend_report_top_services: ${{ vars.TF_VAR_spend_report_top_services || '50' }}
-  TF_VAR_spend_report_label: ${{ vars.TF_VAR_spend_report_label || 'Sharpsell Agents GCP' }}
-  TF_VAR_spend_report_billing_project_id: ${{ vars.TF_VAR_spend_report_billing_project_id || 'ss-agents-493409' }}
-  TF_VAR_spend_report_billing_dataset: ${{ vars.TF_VAR_spend_report_billing_dataset || 'billing_export' }}
-  TF_VAR_spend_report_billing_location: ${{ vars.TF_VAR_spend_report_billing_location || 'asia-south1' }}
-  TF_VAR_spend_report_billing_table: ${{ vars.TF_VAR_spend_report_billing_table || 'gcp_billing_export_v1_011D81_C2CD75_FF953A' }}
   TF_VAR_spend_report_image_tag: ${{ vars.TF_VAR_spend_report_image_tag || 'latest' }}
   TF_VAR_spend_report_deploy_stamp: ${{ vars.TF_VAR_spend_report_deploy_stamp || 'stable' }}
   TF_VAR_eval_reports_image_tag: ${{ vars.TF_VAR_eval_reports_image_tag || 'latest' }}
