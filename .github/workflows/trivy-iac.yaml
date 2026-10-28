@@ -1,0 +1,66 @@
+name: "Trivy IaC Security Scan"
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - '**.tf'
+      - '**.tfvars'
+      - '.trivyignore'
+  pull_request:
+    branches: [ "main" ]
+    paths:
+      - '**.tf'
+      - '**.tfvars'
+      - '.trivyignore'
+  # Allows running scan manually from the Actions tab
+  workflow_dispatch:
+
+permissions:
+  contents: read          # Minimum permission to check out code
+  security-events: write  # Required to publish findings to GitHub "Security" tab
+
+jobs:
+  iac-scan:
+    name: "Trivy Scan (Terraform)"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: "Checkout Code"
+        uses: actions/checkout@v4
+
+      # -------------------------------------------------------------
+      # Step 1: Generate SARIF report for GitHub Code Scanning
+      # (Always runs with exit-code: 0 so SARIF upload never gets skipped)
+      # -------------------------------------------------------------
+      - name: "Run Trivy (SARIF Output)"
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'config'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-iac-results.sarif'
+          severity: 'CRITICAL,HIGH,MEDIUM'
+
+      # -------------------------------------------------------------
+      # Step 2: Upload findings to GitHub "Security -> Code Scanning"
+      # -------------------------------------------------------------
+      - name: "Upload SARIF to GitHub Security"
+        uses: github/codeql-action/upload-sarif@v3
+        if: always() # Ensure results are published even if next steps fail
+        with:
+          sarif_file: 'trivy-iac-results.sarif'
+        continue-on-error: true # Prevents pipeline failure if GitHub Advanced Security is not enabled
+
+      # -------------------------------------------------------------
+      # Step 3: Developer PR Gate (Console Output & Build Breaker)
+      # Blocks PR merge if CRITICAL or HIGH severity flaws exist
+      # -------------------------------------------------------------
+      - name: "Run Trivy (Gating Check)"
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'config'
+          scan-ref: '.'
+          format: 'table'
+          exit-code: '1' # Fails the pipeline if violations are found
+          severity: 'CRITICAL,HIGH'
